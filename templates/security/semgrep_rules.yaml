@@ -1,6 +1,12 @@
 # Custom Semgrep rules for Python & ADK Agent Services
-# Run with: semgrep scan --config templates/security/semgrep_rules.yaml --error .
+# Run with: semgrep --config=templates/security/semgrep_rules.yaml --error .
 rules:
+  - id: hardcoded-gemini-api-key
+    languages: [python, javascript, typescript, generic]
+    message: "Hardcoded Google/Gemini API key detected. Load from os.environ or Secret Manager."
+    severity: ERROR
+    pattern-regex: "AIzaSy[A-Za-z0-9_\\-]*"
+
   - id: python-no-shell-true
     languages: [python]
     message: "Avoid subprocess with shell=True; pass an argv list with shell=False to prevent command injection."

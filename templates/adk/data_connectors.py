@@ -13,13 +13,29 @@ import sqlalchemy
 
 
 # ---------------------------------------------------------------------------
-# 1. MCP Toolbox for Databases (GenAI Toolbox) Loader
+# 1. MCP Toolbox for Databases (GenAI Toolbox) Loader (ADK Native & Sync Client)
 # ---------------------------------------------------------------------------
+def build_adk_toolbox_toolset(
+    toolbox_url: str = "http://127.0.0.1:5000",
+    toolset_name: str = "alloydb_nl2sql",
+) -> Any:
+    """Returns a native ADK `ToolboxToolset` (`pip install 'google-adk[toolbox]'`).
+
+    Pass directly into `Agent(tools=[build_adk_toolbox_toolset()])`.
+    """
+    from google.adk.tools.toolbox_toolset import ToolboxToolset
+
+    return ToolboxToolset(
+        server_url=os.environ.get("TOOLBOX_URL", toolbox_url),
+        toolset_name=os.environ.get("TOOLBOX_TOOLSET_NAME", toolset_name),
+    )
+
+
 def load_mcp_toolbox_tools(
     toolbox_url: str = "http://127.0.0.1:5000",
     toolset_name: str | None = None,
 ) -> list[Any]:
-    """Loads parameterized database tools from a running GenAI MCP Toolbox server.
+    """Loads parameterized database tools from a running GenAI MCP Toolbox server via `toolbox_core`.
 
     Args:
         toolbox_url: Base URL of the running `toolbox` server (default port 5000).

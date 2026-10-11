@@ -1,9 +1,7 @@
 """Vertex AI GenAI Evaluation Service (`EvalTask`) & Local `report.json` Runner.
 
-Supports both trajectory metrics (`trajectory_exact_match`, `trajectory_in_order_match`,
-`trajectory_any_order_match`, `trajectory_precision`, `trajectory_recall`,
-`trajectory_single_tool_use`) and response quality metrics (`coherence`, `fluency`,
-`safety`, `groundedness`, `ROUGE`), saving results to local `report.json` and optional GCS.
+Automatically loads `evaluation.json` (`"evaluation_dataset"` with `question` / `expected_answer`)
+if present in the current directory, or falls back to a default trajectory/quality dataset.
 """
 
 from __future__ import annotations
@@ -18,56 +16,61 @@ import vertexai
 from vertexai.evaluation import EvalTask, MetricPromptTemplateExamples
 
 
-def build_default_eval_dataset() -> pd.DataFrame:
-    """Constructs a sample evaluation DataFrame with prompt, reference trajectory, and response."""
-    records: list[dict[str, Any]] = [
+def load_or_build_eval_dataset(eval_json_path: str = "evaluation.json") -> pd.DataFrame:
+    """Loads `evaluation.json` if present, otherwise builds a reference evaluation DataFrame."""
+    path = Path(eval_json_path)
+    if path.is_file():
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        items = raw.get("evaluation_dataset", raw if isinstance(raw, list) else [])
+        records: list[dict[str, Any]] = []
+        for item in items:
+            q = item.get("question") or item.get("prompt") or ""
+            ref = item.get("expected_answer") or item.get("reference") or ""
+            resp = item.get("response") or ref
+            records.append(
+                {
+                    "prompt": q,
+                    "response": resp,
+                    "reference": ref,
+                    "context": item.get("key_policy_rules", ref),
+                }
+            )
+        if records:
+            return pd.DataFrame(records)
+
+    default_records: list[dict[str, Any]] = [
         {
             "prompt": "Check the health status of payments_api including SLA metrics.",
             "reference": "The payments_api service is HEALTHY with P95 latency of 142ms.",
             "context": "Service ID: payments_api. State: HEALTHY. P95 latency: 142.0ms. Error rate: 0.001.",
             "response": "payments_api is currently HEALTHY (P95 latency: 142ms, error rate: 0.1%).",
-            "reference_trajectory": [
-                {
-                    "tool_name": "lookup_service_status",
-                    "tool_input": {"service_id": "payments_api", "include_metrics": True},
-                }
-            ],
-            "predicted_trajectory": [
-                {
-                    "tool_name": "lookup_service_status",
-                    "tool_input": {"service_id": "payments_api", "include_metrics": True},
-                }
-            ],
         }
     ]
-    return pd.DataFrame(records)
+    return pd.DataFrame(default_records)
 
 
 def run_evaluation(
-    experiment_name: str = "agent-quality-eval",
+    experiment_name: str = os.environ.get("EVAL_EXPERIMENT_NAME", "travel-policy-eval"),
     output_file: str = "report.json",
     gcs_output_uri: str | None = None,
 ) -> dict[str, Any]:
     """Executes a Vertex AI EvalTask and writes summary + row metrics to `output_file`."""
     project_id = os.environ["GOOGLE_CLOUD_PROJECT"]
-    # Vertex AI EvalTask requires a regional endpoint (e.g., us-central1)
+    # Vertex AI EvalTask requires a regional endpoint (e.g., us-central1), NEVER global
     location = os.environ.get("EVAL_LOCATION", "us-central1")
     if location == "global":
         location = "us-central1"
 
     vertexai.init(project=project_id, location=location)
-    eval_df = build_default_eval_dataset()
+    eval_df = load_or_build_eval_dataset()
 
     eval_task = EvalTask(
         dataset=eval_df,
         metrics=[
-            "trajectory_exact_match",
-            "trajectory_in_order_match",
-            "trajectory_precision",
-            "rouge_l_sum",
-            MetricPromptTemplateExamples.Pointwise.COHERENCE,
+            MetricPromptTemplateExamples.Pointwise.QUESTION_ANSWERING_QUALITY,
             MetricPromptTemplateExamples.Pointwise.GROUNDEDNESS,
             MetricPromptTemplateExamples.Pointwise.SAFETY,
+            "rouge_l_sum",
         ],
         experiment=experiment_name,
         output_uri_prefix=gcs_output_uri,
