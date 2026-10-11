@@ -1,0 +1,117 @@
+# ==============================================================================
+# do-harness-lite — Hardened Security & Privacy .gitignore
+# ==============================================================================
+
+# 1. Secrets, Tokens & Environment Files (NEVER COMMIT)
+.env
+.env.*
+!.env.example
+env.local
+.env.local
+.env.production
+.env.development
+.env.confidential
+*.env
+*.pat
+*.token
+*token*
+!templates/security/validate_tool_call.py
+.github.pat.token
+antigravity-oauth-token*
+
+# 2. Cryptographic Keys, Certificates & Cloud Credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.der
+*.csr
+id_rsa*
+id_ed25519*
+*credentials*.json
+*service_account*.json
+*service-account*.json
+client_secret*.json
+adc.json
+*.gcert*
+.gcloud/
+
+# 3. Local Agent, IDE & Tool State
+.gemini/
+.agents/hooks.local.json
+.harness/
+.dsh/
+.dsh-sessions/
+dsh-state.json
+.adk/
+.agent-cache/
+.google-agents-cli/
+.codemender/
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# 4. Python & Virtual Environments (Dirs + Symlinks)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv
+.venv/
+venv
+venv/
+env/
+ENV/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.uv/
+
+# 5. Node.js & Frontend Artifacts
+node_modules
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 6. Terraform & Infrastructure State
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+
+# 7. Databases, Evaluation Outputs & Local Reports
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+dump.rdb
+eval_results/
+eval_runs/
+*.eval.json
+report.json
+cm-security-report.json
+agent-card.json
+*.log
+logs/
+scratch/
+.scratch/
+tmp/

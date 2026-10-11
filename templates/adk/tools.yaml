@@ -1,0 +1,54 @@
+# MCP Toolbox for Databases (GenAI Toolbox) configuration template
+# Start server locally:
+#   toolbox --tools-file tools.yaml --port 5000
+sources:
+  primary_alloydb:
+    kind: alloydb-postgres
+    project: ${GOOGLE_CLOUD_PROJECT}
+    region: ${ALLOYDB_REGION:-us-central1}
+    cluster: ${ALLOYDB_CLUSTER}
+    instance: ${ALLOYDB_INSTANCE}
+    database: ${DB_NAME:-postgres}
+    user: ${DB_USER:-postgres}
+    password: ${DB_PASS}
+
+tools:
+  search_records_by_status:
+    kind: postgres-sql
+    source: primary_alloydb
+    description: >-
+      Retrieves operational records matching a specific status value.
+      Use this tool when checking open or critical items.
+    parameters:
+      - name: status
+        type: string
+        description: Record status filter (for example, OPEN, IN_PROGRESS, RESOLVED).
+      - name: max_rows
+        type: integer
+        description: Maximum number of rows to return (default 20).
+    statement: |
+      SELECT id, title, status, severity, updated_at
+      FROM operational_records
+      WHERE status = $1
+      ORDER BY updated_at DESC
+      LIMIT $2;
+
+  get_record_by_id:
+    kind: postgres-sql
+    source: primary_alloydb
+    description: >-
+      Fetches full details for a single operational record by its unique ID.
+    parameters:
+      - name: record_id
+        type: string
+        description: Unique identifier of the record.
+    statement: |
+      SELECT id, title, status, severity, details, updated_at
+      FROM operational_records
+      WHERE id = $1
+      LIMIT 1;
+
+toolsets:
+  readonly_ops_toolset:
+    - search_records_by_status
+    - get_record_by_id

@@ -1,0 +1,38 @@
+# Custom Semgrep rules for Python & ADK Agent Services
+# Run with: semgrep scan --config templates/security/semgrep_rules.yaml --error .
+rules:
+  - id: python-no-shell-true
+    languages: [python]
+    message: "Avoid subprocess with shell=True; pass an argv list with shell=False to prevent command injection."
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: subprocess.$FUNC(..., shell=True, ...)
+          - pattern: os.system(...)
+
+  - id: python-no-eval-exec
+    languages: [python]
+    message: "Avoid eval() or exec() on dynamic input."
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: exec(...)
+
+  - id: python-no-sql-fstring
+    languages: [python]
+    message: "Potential SQL injection via formatted string. Use parameterized queries (:param or $1)."
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: $CONN.execute(f"SELECT ...", ...)
+          - pattern: $CONN.execute(f"INSERT ...", ...)
+          - pattern: $CONN.execute(f"UPDATE ...", ...)
+          - pattern: $CONN.execute(f"DELETE ...", ...)
+          - pattern: sqlalchemy.text(f"...")
+
+  - id: adk-no-set-env-vars-in-gcloud
+    languages: [bash, sh]
+    message: "Use --update-env-vars instead of --set-env-vars on Cloud Run so existing service env vars are preserved."
+    severity: WARNING
+    pattern-regex: "gcloud\\s+run\\s+services\\s+update\\s+.*--set-env-vars"
