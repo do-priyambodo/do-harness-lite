@@ -12,12 +12,12 @@
      |
      +-- 1. before_model_callback --> [Model Armor Regional REP (modelarmor.us-central1.rep.googleapis.com)]
      |
-     +-- 2. ADK Root Coordinator (gemini-3.1-pro-preview, GOOGLE_CLOUD_LOCATION=global)
+     +-- 2. ADK Root Coordinator (gemini-4-argon, GOOGLE_CLOUD_LOCATION=global)
              |
              +-- [ParallelAgent: context_gatherer]
-             |      |-- Sub-Agent A: telemetry_agent (gemini-3-flash-preview)
+             |      |-- Sub-Agent A: telemetry_agent (gemini-3.8-flash)
              |      |       `--> [MCP Toolbox / AlloyDB Pool (us-central1, Private IP, IAM Auth)]
-             |      `-- Sub-Agent B: policy_rag_agent (gemini-3-flash-preview + Context Cache)
+             |      `-- Sub-Agent B: policy_rag_agent (gemini-3.8-flash + Context Cache)
              |              `--> [Vertex AI Search / CMEK GCS Bucket (us-central1)]
              |
              `-- [Sequential / Loop Synthesizer] --> Structured Triage Recommendation (Read-Only HITL)
@@ -28,7 +28,7 @@
 | Layer | Google Cloud Service | Configuration & Endpoint | Purpose |
 | :--- | :--- | :--- | :--- |
 | **Serving Runtime** | Cloud Run v2 / Agent Runtime | Regional (`us-central1`), `get_fast_api_app(web=False)`, dedicated IAM SA. | Hosts stateless ADK FastAPI server and A2A agent card endpoint. |
-| **Reasoning Engine** | Vertex AI Gemini Models | `GOOGLE_CLOUD_LOCATION=global`; `gemini-3.1-pro-preview` (root) & `gemini-3-flash-preview` (sub-agents). | Orchestrates tool routing, parallel retrieval, and grounded synthesis. |
+| **Reasoning Engine** | Vertex AI Gemini Models | `GOOGLE_CLOUD_LOCATION=global`; `gemini-4-argon` (root) & `gemini-3.8-flash` (sub-agents). | Orchestrates tool routing, parallel retrieval, and grounded synthesis. |
 | **Safety Perimeter** | Google Cloud Model Armor | Regional REP (`modelarmor.us-central1.rep.googleapis.com`), PI/Jailbreak + RAI + SDP filters. | Screens inbound user prompts and outbound model responses in callbacks. |
 | **Transactional Data** | AlloyDB for PostgreSQL + MCP Toolbox | Regional (`us-central1`), Private IP, singleton pool (`max=20`), parameterized SQL in `tools.yaml`. | Executes sub-100ms operational state queries without raw SQL exposure. |
 | **Knowledge & Artifacts** | Vertex AI Context Cache + CMEK GCS | Regional (`us-central1`) GCS bucket with Cloud KMS CMEK + `CachedContent` (`ttl=3600s`). | Stores static policy corpora and evaluation artifacts (`report.json`). |

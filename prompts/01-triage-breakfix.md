@@ -10,7 +10,7 @@ Execute this workflow strictly:
 2. Read README.md, .agents/CONTEXT.md (if present), and every ticket/brief file in the workspace. Build a concise checklist of all tickets and their exact acceptance criteria.
 3. Solve each ticket one by one using surgical edits:
    - Never delete or overwrite existing `.agents/` or `GEMINI.md` files in the repo.
-   - For Gemini 3 preview models (`gemini-3-flash-preview`, `gemini-3.1-pro-preview`), set `GOOGLE_CLOUD_LOCATION="global"` and `GOOGLE_GENAI_USE_VERTEXAI="True"`.
+   - For Gemini models (`gemini-4-argon`, `gemini-3.8-flash`, or legacy lab models `gemini-3.6-flash`, `gemini-3.1-pro-preview`, `gemini-3-flash-preview`), set `GOOGLE_CLOUD_LOCATION="global"` and `GOOGLE_GENAI_USE_VERTEXAI="True"`.
    - For Cloud Run, Agent Runtime, Model Armor, AlloyDB, and Agent Registry, always use a regional location (e.g., `us-central1`).
    - Ensure every ADK `Agent(name=...)` uses underscores only, every sub-agent has a single parent, instruction state variables use `{var?}` or are seeded in `before_agent_callback`, and `before_tool_callback` returns `None` when allowing execution.
    - For database pool exhaustion (Node.js `pg` or Python SQLAlchemy), replace per-request client creation with a module-level singleton connection pool (`max: 20`).

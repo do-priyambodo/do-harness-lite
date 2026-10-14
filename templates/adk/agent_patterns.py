@@ -25,12 +25,13 @@ from google.genai import types
 # ---------------------------------------------------------------------------
 # 1. Environment & Model Defaults
 # ---------------------------------------------------------------------------
-# Gemini 3.6 Flash (Provisioned Throughput on global) or gemini-2.5-flash fallback
+# Gemini 4 Argon (gemini-4-argon) & Gemini 3.8 Flash (gemini-3.8-flash) on global
+# Note: Always check spec.md/.env first in case a lab grader expects a specific model string.
 os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "True")
 os.environ.setdefault("GOOGLE_CLOUD_LOCATION", "global")
 
-DEFAULT_FAST_MODEL = os.environ.get("ADK_FAST_MODEL", "gemini-3.6-flash")
-DEFAULT_PRO_MODEL = os.environ.get("ADK_PRO_MODEL", "gemini-3.6-flash")
+DEFAULT_FAST_MODEL = os.environ.get("ADK_FAST_MODEL", "gemini-3.8-flash")
+DEFAULT_PRO_MODEL = os.environ.get("ADK_PRO_MODEL", "gemini-4-argon")
 
 
 # ---------------------------------------------------------------------------

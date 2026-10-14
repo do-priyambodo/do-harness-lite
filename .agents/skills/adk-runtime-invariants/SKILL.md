@@ -8,10 +8,10 @@ description: Authoritative Google ADK (1.x and 2.0), Vertex AI, Model Armor, MCP
 Follow these rules strictly whenever creating, modifying, evaluating, or deploying agents with the Google Agent Development Kit (`google-adk`).
 
 ## 1. Environment & Region Split ( #1 Silent Failure )
-- **Gemini 3 Models (`gemini-3.6-flash`, `gemini-3-flash-preview`, `gemini-3.1-pro-preview`)**:
+- **Gemini 4 & Gemini 3.8 / 3.x Models (`gemini-4-argon`, `gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.1-pro-preview`, `gemini-3-flash-preview`)**:
   - Require `GOOGLE_CLOUD_LOCATION="global"` and `GOOGLE_GENAI_USE_VERTEXAI="True"`.
-  - Calling a regional endpoint (`us-central1`) with `gemini-3.6-flash` or preview models raises `404 NOT_FOUND ... Publisher model`.
-  - If a project does not have `gemini-3.6-flash` allowlisted, fall back to `gemini-2.5-flash`.
+  - Calling a regional endpoint (`us-central1`) with `gemini-4-argon`, `gemini-3.8-flash`, or `gemini-3.6-flash` raises `404 NOT_FOUND ... Publisher model`.
+  - Always check `spec.md` / `.env.example` first in case a Qwiklabs grader check explicitly requires a specific model ID string (such as `gemini-3.8-flash` or `gemini-3.6-flash`).
 - **Regional Control Planes (`us-central1` or assigned region)**:
   - **Agent Runtime Deploy** (`agents-cli deploy`), **Vertex AI `EvalTask`** (`vertexai.init(project=..., location="us-central1")`), **Cloud Run**, **Cloud Agent Registry**, **AlloyDB / Cloud SQL**, and **Model Armor** (`https://modelarmor.<region>.rep.googleapis.com/`) MUST use a regional location — NEVER `global`.
 

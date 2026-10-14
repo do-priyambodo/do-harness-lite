@@ -6,8 +6,13 @@
 3. **Preserve Existing Guardrails**: If the workspace already contains `GEMINI.md`, `.agents/CONTEXT.md`, `.agents/hooks.json`, or `.pre-commit-config.yaml`, keep them intact and additive.
 
 ## 1. Google ADK & Vertex AI Runtime Invariants
+- **Default Google Gemini Model Tiering (`GOOGLE_CLOUD_LOCATION="global"`)**:
+  - **Pro / Root Orchestrator & Complex Reasoning Default**: **`Gemini 4 Argon`** — Vertex AI / ADK ID: `gemini-4-argon` (`GEMINI_MODEL` / `ADK_PRO_MODEL`; Antigravity CLI `agy --model`: `gemini-4-argon-high` / `gemini-4-argon-medium`).
+  - **Fast / Sub-Agent & High-Throughput Default**: **`Gemini 3.8 Flash`** — Vertex AI / ADK ID: `gemini-3.8-flash` (`GEMINI_FAST_MODEL` / `ADK_FAST_MODEL`; Antigravity CLI `agy --model`: `gemini-3.8-flash-high` / `gemini-3.8-flash-medium`).
+  - **Ultra-Low-Cost Classification / Routing**: **`Gemini 3.5 Flash-Lite`** (`gemini-3.5-flash-lite`).
+  - **Lab Grader Override**: Always honor `spec.md` / `.env.example` first if an automated Qwiklabs grader check explicitly requires a legacy model ID (`gemini-3.6-flash`, `gemini-3.1-pro-preview`, `gemini-3-flash-preview`).
 - **Global vs. Regional Endpoint Split**:
-  - **Gemini Model Inference**: When using `gemini-3.6-flash` or `gemini-2.5-flash` on Vertex AI, set `GOOGLE_GENAI_USE_VERTEXAI="True"` and `GOOGLE_CLOUD_LOCATION="global"` in `.env` (or `os.environ` before initializing `genai.Client()` / `Agent()`).
+  - **Gemini Model Inference**: When using **`Gemini 4 Argon` (`gemini-4-argon`)**, **`Gemini 3.8 Flash` (`gemini-3.8-flash`)**, or legacy lab models (`gemini-3.6-flash`, `gemini-3.1-pro-preview`, `gemini-3-flash-preview`) on Vertex AI, set `GOOGLE_GENAI_USE_VERTEXAI="True"` and `GOOGLE_CLOUD_LOCATION="global"` in `.env` (or `os.environ` before initializing `genai.Client()` / `Agent()`).
   - **Agent Runtime (`ReasoningEngine`), Vertex AI `EvalTask`, & Cloud Run**: Always use the **regional** location (`us-central1`, `europe-west1`, etc.) in `agents-cli-manifest.yaml`, `--region`, and `vertexai.init(project=..., location=...)`.
   - **Model Armor**: Always use the regional REP endpoint `modelarmor.<region>.rep.googleapis.com` (`ClientOptions(api_endpoint=f"modelarmor.{location}.rep.googleapis.com")`).
 - **Agent Identifier Naming**: Every `Agent(name=...)`, `LlmAgent`, `SequentialAgent`, `ParallelAgent`, and `LoopAgent` MUST use a valid Python identifier with **underscores, never hyphens** (`^[a-zA-Z_][a-zA-Z0-9_]*$`).

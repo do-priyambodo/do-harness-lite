@@ -5,6 +5,7 @@
 It is designed for fresh cloud workstations and timed engineering sprints where:
 - You need **< 2-second verification (`hl-verify`)** instead of slow CI pipelines.
 - You want **global agent rules & skills (`~/.gemini/`, `~/.agents/`)** so target project repositories stay 100% `git status`-clean.
+- You standardize on **`Gemini 4 Argon` (`gemini-4-argon`)** as the default Pro / Root Orchestrator model and **`Gemini 3.8 Flash` (`gemini-3.8-flash`)** as the default Fast / Sub-Agent model on `GOOGLE_CLOUD_LOCATION="global"`.
 - You need **ready-to-copy blueprints** for ADK multi-agent workflows, Regional Model Armor, MCP Toolbox / AlloyDB pooling, Vertex AI `EvalTask`, Cloud Agent Registry (A2A), Semgrep + `PreToolUse` hooks, Terraform CMEK infrastructure, and Well-Architected SDDs.
 
 ---
