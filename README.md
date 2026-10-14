@@ -73,8 +73,12 @@ do-harness-lite/
 │   │   ├── run_vertex_eval_task.py           # Vertex AI EvalTask runner -> report.json & GCS
 │   │   └── test_config.json                  # ADK eval criteria thresholds
 │   ├── security/
-│   │   ├── semgrep_rules.yaml                # Custom Semgrep rules (SQLi, shell=True, Cloud Run flags)
-│   │   ├── validate_tool_call.py             # PreToolUse runtime guardrail script (exits 2 on block)
+│   │   ├── CONTEXT.md                        # Passive .agents/CONTEXT.md (Paved Roads & TDD Gate)
+│   │   ├── pre-commit-config.yaml            # Passive .pre-commit-config.yaml running semgrep --error
+│   │   ├── semgrep_rules.yaml                # Custom Semgrep rules (API key, SQLi, shell=True, Cloud Run)
+│   │   ├── threat_model.md                   # Passive 6-row STRIDE architectural threat model template
+│   │   ├── test_security_boundaries.py       # Hermetic outcome-based pytest security boundary template
+│   │   ├── validate_tool_call.py             # PreToolUse runtime guardrail script (exits 1 on block)
 │   │   └── hooks.json                        # .agents/hooks.json configuration
 │   ├── terraform/
 │   │   └── main.tf                           # KMS CMEK, GCS, Least-Privilege SA, Cloud Run v2, labels
