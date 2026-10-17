@@ -32,18 +32,26 @@ When building an end-to-end solution under a strict clock, never write all code 
 4. Run `hl-verify .` and execute a smoke turn (`adk run` or `agents-cli run`).
 
 ## Checkpoint 3: Cloud Deployment, Registry & Gemini Enterprise (Minutes 50–75)
-1. Start Cloud Run or Agent Runtime deployment early (deployments take 2–4 minutes; work on docs or evals while the build runs):
-   - Agent Runtime: `hl-adk deploy-runtime us-central1` (auto-registers in Agent Registry)
-   - Cloud Run update: `hl-adk update-cloudrun <service> <region> --env KEY=VAL` (always `--update-env-vars`, never `--set-env-vars`).
+1. Start Cloud Run or Agent Runtime deployment early (deployments take 2–4 minutes; never start a duplicate `ReasoningEngine` build if one is already running):
+   - **Agent Runtime (`ReasoningEngine`)**:
+     - Deploy (idempotent): `hl-adk deploy-runtime us-central1`
+     - Verify/Test (polls LRO if in progress): `hl-adk test-runtime us-central1 "Test policy question"`
+     - *(Note: When deploying to Agent Runtime, do NOT call `get_fast_api_app` or inspect `app.routes`.)*
+   - **Cloud Run update**: `hl-adk update-cloudrun <service> <region> --env KEY=VAL` (always `--update-env-vars`, never `--set-env-vars`).
 2. If Cloud Agent Registry A2A registration is required for a Cloud Run service:
    - Run `hl-adk register-a2a <service-id> <service-or-card-url> <region> "<Display Name>" "<Description>"`
 3. If publishing to Gemini Enterprise is required:
    - Ensure the Gemini Enterprise App is created in `global` with **Google Identity** enabled in Settings, then run:
-     `hl-adk publish-ge "$GEMINI_APP_ID" "<Display Name>" "<Description>" agent_runtime`
+     `hl-adk publish-ge "<App Display Name or APP_ID>" "<Agent Display Name>" "<Description>" agent_runtime`
+     *(Auto-grants IAM, resolves `<APP_ID>` and `<REASONING_ENGINE>`, runs `agents-cli publish gemini-enterprise`, and verifies/registers on the Discovery Engine `v1alpha` Assistant Agents API.)*
 
 ## Checkpoint 4: Evaluation, Final Audit & Safe Grading Rules (Minutes 75–90)
-1. Run required evaluations (`adk eval`, `agents-cli eval run --dataset eval/golden.jsonl --output eval/results/run_v2.json`, or `templates/eval/run_vertex_eval_task.py`) and confirm output artifacts (`report.json`, GCS outputs) exist and pass thresholds.
+1. Run required evaluations:
+   - For Vertex AI `EvalTask` batch evaluations (`evaluation.json`):
+     `hl-adk run-eval evaluation.json cymbal-travel-policy-eval us-central1`
+     *(Auto-initializes `metadataStores/default` in `us-central1`, evaluates with valid `Pointwise` metrics `GROUNDEDNESS`, `QUESTION_ANSWERING_QUALITY`, `INSTRUCTION_FOLLOWING`, `SAFETY`, `"rouge_l_sum"`, and writes `report.json` + `evaluation_report.json`.)*
+   - Or for `agents-cli` / `adk eval`: `agents-cli eval run --dataset eval/golden.jsonl --output eval/results/run_v2.json`.
 2. **CRITICAL GRADING RULES**:
-   - **Keep Local Servers Running**: Keep `localhost:8000` (`uvicorn main:app` / `python3 agent.py`) and `localhost:5000` (`toolbox`) running in background terminals while clicking **Check My Progress**.
+   - **Keep Required Local Servers Running**: If the lab grades a local FastAPI (`localhost:8000`) or MCP Toolbox (`localhost:5000`) server, keep it running in the background while clicking **Check My Progress**.
    - **Hold Destructive Teardown Checks**: If the final subtask (e.g., Subtask 25) tests gateway teardown or resource deletion, **hold that check until all earlier checks (1–24) are scored green**.
    - **Never End Early**: Never stop or end the session until the passing score is verified on the progress ribbon.

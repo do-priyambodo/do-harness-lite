@@ -65,7 +65,22 @@ Follow these rules strictly whenever creating, modifying, evaluating, or deployi
 - Inspect `response.sanitization_result.filter_match_state == modelarmor_v1.FilterMatchState.MATCH_FOUND`.
 - **Output Template Best Practice**: On an output/response Model Armor template (`sanitize_model_response`), keep Prompt Injection / Jailbreak detection **disabled** (`hl-adk create-model-armor <id> <region> --output-safe`) so benign agent answers are not false-positively blocked.
 
-## 7. Cloud Run & A2A Production Wiring
-- **Headless API Server**: Use `get_fast_api_app(adk_app=root_agent, web=False)` in containers with read-only filesystems.
-- **Env Var Safety**: Always update Cloud Run services with `--update-env-vars KEY=VAL` or `--image=...`. Never use `--set-env-vars`, which wipes existing `DB_USER`, `DB_PASSWORD`, and VPC variables.
-- **A2A Agent Registry**: Fetch the card from `/a2a/app/.well-known/agent-card.json` (or `/.well-known/agent-card.json`) with `Authorization: Bearer $(gcloud auth print-identity-token)`, strip `.supportedInterfaces, .additionalInterfaces` via `jq`, and register via `gcloud agent-registry services create NAME --location=REGION --agent-spec-type=a2a-agent-card --agent-spec-content=agent-card.json` (automated by `hl-adk register-a2a`).
+## 7. Deployment Target Separation: Agent Runtime (`ReasoningEngine`) vs. Cloud Run (`FastAPI`)
+- **Target A — Vertex AI Agent Runtime (`deployment_target: "agent_runtime"` / `ReasoningEngine`)**:
+  - Package only `<agent_pkg>/__init__.py` exposing `root_agent = Agent(...)` (plus any bundled data files inside `<agent_pkg>/`) and `.env`.
+  - **NEVER** call `get_fast_api_app` or spin up `uvicorn` on `:8000` when the target is Agent Runtime.
+  - **Idempotent Deploy & Test**: Always check `ReasoningEngine.list()` before deploying so you never start a duplicate 5-minute LRO build. Use:
+    - `hl-adk deploy-runtime us-central1` (idempotent deploy via `agents-cli` + `ReasoningEngine.create` fallback)
+    - `hl-adk test-runtime us-central1 "<test question>"` (polls any in-flight LRO and tests via `engine.stream_query`)
+    - `hl-adk publish-ge "<Gemini Enterprise App Name or ID>" "<Display Name>" "<Description>"` (grants IAM, resolves App ID & ReasoningEngine, runs `agents-cli publish gemini-enterprise`, and verifies/registers on Discovery Engine `v1alpha/.../assistants/default_assistant/agents`)
+- **Target B — Cloud Run & A2A Production Wiring (`deployment_target: "cloud_run"`)**:
+  - **Headless API Server**: Use `get_fast_api_app(agents_dir=".", web=False)` in containers with read-only filesystems (never pass the non-existent `adk_app=` kwarg, and **NEVER** iterate `[r.methods for r in app.routes]` because Starlette `APIWebSocketRoute` has no `.methods` attribute; use `getattr(r, "methods", ["WS"])` if inspecting routes).
+  - **Env Var Safety**: Always update Cloud Run services with `--update-env-vars KEY=VAL` or `--image=...`. Never use `--set-env-vars`, which wipes existing `DB_USER`, `DB_PASSWORD`, and VPC variables.
+  - **A2A Agent Registry**: Fetch the card from `/a2a/app/.well-known/agent-card.json` (or `/.well-known/agent-card.json`) with `Authorization: Bearer $(gcloud auth print-identity-token)`, strip `.supportedInterfaces, .additionalInterfaces` via `jq`, and register via `gcloud agent-registry services create NAME --location=REGION --agent-spec-type=a2a-agent-card --agent-spec-content=agent-card.json` (automated by `hl-adk register-a2a`).
+
+## 8. Vertex AI `EvalTask` Batch Evaluation Invariants
+- **Default MetadataStore Prerequisite**: Before calling `EvalTask(...).evaluate()`, ensure `projects/<PROJECT_ID>/locations/us-central1/metadataStores/default` exists (if `GET` returns `404`, `POST .../metadataStores?metadataStoreId=default`).
+- **Valid `MetricPromptTemplateExamples.Pointwise` Constants**:
+  - Use `GROUNDEDNESS`, `QUESTION_ANSWERING_QUALITY`, `INSTRUCTION_FOLLOWING`, `SAFETY`, and `"rouge_l_sum"`.
+  - **NEVER** use `MetricPromptTemplateExamples.Pointwise.RELEVANCE` (it does not exist in `vertexai.evaluation` and raises `AttributeError`).
+- **One-Command Execution**: Prefer `hl-adk run-eval evaluation.json cymbal-travel-policy-eval us-central1`.

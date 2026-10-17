@@ -125,12 +125,30 @@ def check_python_file(
                             f"pass '{node.name}' inside tools=[{node.name}] instead."
                         )
 
-    # Walk Agent(...) constructor calls
+    # Walk AST for Agent(...), get_fast_api_app(...), and Pointwise.RELEVANCE
     subagent_parents: dict[str, list[int]] = {}
     for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == "RELEVANCE":
+            if isinstance(node.value, ast.Attribute) and node.value.attr == "Pointwise":
+                errors.append(
+                    f"{py_path}:{node.lineno} [INVALID_EVAL_METRIC] "
+                    f"'Pointwise.RELEVANCE' does not exist in vertexai.evaluation; "
+                    f"use 'Pointwise.QUESTION_ANSWERING_QUALITY' or 'Pointwise.INSTRUCTION_FOLLOWING'."
+                )
+
         if not isinstance(node, ast.Call):
             continue
         fn_name = _call_func_name(node)
+        if fn_name == "get_fast_api_app":
+            kw_names = {kw.arg for kw in node.keywords if kw.arg}
+            if "adk_app" in kw_names:
+                errors.append(
+                    f"{py_path}:{node.lineno} [INVALID_FAST_API_APP_KWARG] "
+                    f"get_fast_api_app() does not accept 'adk_app='; use get_fast_api_app(agents_dir='.', web=False) "
+                    f"(or omit get_fast_api_app entirely when deploying to Vertex AI Agent Runtime)."
+                )
+            continue
+
         if fn_name not in AGENT_CLASSES:
             continue
 
@@ -279,6 +297,9 @@ def run_selftest() -> int:
             'def my_tool(x):\n'
             '    return x\n'
             'def Agent(**kwargs): return kwargs\n'
+            'def get_fast_api_app(**kwargs): return kwargs\n'
+            'app = get_fast_api_app(adk_app=root_agent, web=False)\n'
+            'm = MetricPromptTemplateExamples.Pointwise.RELEVANCE\n'
             'sub = Agent(name="bad-hyphen-name", instruction="Hello {missing_q}", tools=[my_tool])\n'
             'p1 = Agent(name="parent_one", sub_agents=[sub])\n'
             'p2 = Agent(name="parent_two", sub_agents=[sub])\n',
@@ -293,11 +314,13 @@ def run_selftest() -> int:
             "UNSAFE_STATE_PLACEHOLDER",
             "UNDOCUMENTED_TOOL",
             "UNTYPED_TOOL_PARAM",
+            "INVALID_FAST_API_APP_KWARG",
+            "INVALID_EVAL_METRIC",
         ]:
             if expected not in codes:
                 print(f"[SELFTEST FAIL] Expected {expected} in {codes}")
                 return 1
-    print("✅ verify_lite.py --selftest PASSED (all 6 detector classes verified).")
+    print("✅ verify_lite.py --selftest PASSED (all 8 detector classes verified).")
     return 0
 
 

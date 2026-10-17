@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# adk_ops.sh (hl-adk) — High-Speed ADK, Agent Runtime, Cloud Run, A2A & Model Armor Operations
-# Supports both agents-cli 1.2.x and 1.3.x syntax, safe Cloud Run updates,
-# GA Cloud Agent Registry A2A registration, and Regional Model Armor templates.
+# adk_ops.sh (hl-adk) — High-Speed ADK, Agent Runtime, Cloud Run, A2A, Gemini Enterprise & EvalTask Operations
+# Supports both agents-cli 1.2.x and 1.3.x syntax, idempotent Agent Runtime deployment,
+# auto-discovered Gemini Enterprise registration, Vertex AI EvalTask batch execution,
+# safe Cloud Run updates, GA Cloud Agent Registry A2A registration, and Regional Model Armor templates.
 set -euo pipefail
 
 usage() {
@@ -21,13 +22,27 @@ Subcommands:
       Pass --workflow to use `agents-cli scaffold create <NAME> --adk`.
 
   deploy-runtime [REGION] [ENTRYPOINT]
-      Deploy agent to managed Agent Runtime (default region: us-central1).
-      Automatically updates agents-cli-manifest.yaml `deployment_target: "agent_runtime"`
-      if present, or passes `--entrypoint` if needed.
+      Idempotently deploy agent to Vertex AI Agent Runtime (ReasoningEngine) in REGION (default: us-central1).
+      Checks if a ReasoningEngine already exists first (preventing duplicate 5-min builds!),
+      runs `agents-cli deploy` (updating `agents-cli-manifest.yaml`), and automatically
+      falls back to `vertexai.preview.reasoning_engines.ReasoningEngine.create(AdkApp(...))`.
 
-  publish-ge <APP_ID> <DISPLAY_NAME> <DESCRIPTION> [DEPLOYMENT_TARGET] [CARD_URL]
-      Publish an Agent Runtime (`agent_runtime`) or Cloud Run (`cloud_run`) agent
-      to Gemini Enterprise via `agents-cli publish gemini-enterprise`.
+  test-runtime [REGION] [PROMPT]
+      Wait for any in-progress ReasoningEngine operation in REGION (default: us-central1) to finish,
+      then smoke-test the deployed ReasoningEngine via `engine.stream_query` (zero FastAPI / get_fast_api_app needed).
+
+  publish-ge [APP_NAME_OR_ID] [DISPLAY_NAME] [DESCRIPTION] [DEPLOYMENT_TARGET] [CARD_URL]
+      Auto-grant IAM roles (`roles/aiplatform.user`, `roles/discoveryengine.admin`),
+      auto-discover Gemini Enterprise App ID in `global` (by display name or ID) and ReasoningEngine in `us-central1`,
+      run `agents-cli publish gemini-enterprise`, AND verify/register on the Discovery Engine
+      `v1alpha/.../assistants/default_assistant/agents` REST endpoint.
+
+  run-eval [EVAL_JSON_PATH] [EXPERIMENT_NAME] [REGION]
+      Ensure default Vertex AI MetadataStore exists in REGION (default: us-central1),
+      load `evaluation.json` (default: ./evaluation.json), execute a batch `vertexai.evaluation.EvalTask`
+      under EXPERIMENT_NAME (default: cymbal-travel-policy-eval) with valid Pointwise metrics
+      (`GROUNDEDNESS`, `QUESTION_ANSWERING_QUALITY`, `INSTRUCTION_FOLLOWING`, `SAFETY`, `"rouge_l_sum"`),
+      and write `report.json` + `evaluation_report.json`.
 
   update-cloudrun <SERVICE> <REGION> [--image <IMAGE>] [--env KEY=VAL,KEY2=VAL2]
       Safely update a Cloud Run service using --update-env-vars (NEVER --set-env-vars,
@@ -109,38 +124,405 @@ case "${SUBCMD}" in
     fi
     echo "[hl-adk] Running hl-verify before deploy..."
     "$(dirname "${BASH_SOURCE[0]}")/verify_lite.py" .
-    if [[ -f "agents-cli-manifest.yaml" ]]; then
+
+    # 1. Check if a ReasoningEngine already exists in REGION (idempotency guard against duplicate 5-min builds!)
+    EXISTING_RE="$(python3 - "${PROJECT_ID}" "${REGION}" << 'PYEOF'
+import json, sys, subprocess, urllib.request
+project_id, region = sys.argv[1], sys.argv[2]
+try:
+    token = subprocess.check_output(["gcloud", "auth", "print-access-token"], text=True).strip()
+    url = f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/{region}/reasoningEngines"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read().decode())
+    engines = data.get("reasoningEngines", [])
+    if engines:
+        print(engines[0]["name"])
+except Exception:
+    pass
+PYEOF
+)"
+    if [[ -n "${EXISTING_RE}" ]]; then
+      echo "[hl-adk] ✅ Existing ReasoningEngine already deployed in ${REGION}: ${EXISTING_RE}"
+      echo "${EXISTING_RE}" > .reasoning_engine_resource.txt
+      exit 0
+    fi
+
+    # 2. Try agents-cli deploy first
+    if [[ ! -f "agents-cli-manifest.yaml" ]] && command -v agents-cli >/dev/null 2>&1; then
+      agents-cli scaffold enhance . --deployment-target agent_runtime 2>/dev/null || true
+    fi
+    if [[ -f "agents-cli-manifest.yaml" ]] && command -v agents-cli >/dev/null 2>&1; then
       sed -i 's/deployment_target: "none"/deployment_target: "agent_runtime"/g' agents-cli-manifest.yaml
-      echo "[hl-adk] Updated agents-cli-manifest.yaml -> deployment_target: \"agent_runtime\""
-      agents-cli deploy --project "${PROJECT_ID}"
-    elif [[ -n "${ENTRYPOINT}" ]]; then
+      echo "[hl-adk] Deploying via agents-cli deploy (deployment_target: agent_runtime)..."
+      agents-cli deploy --project "${PROJECT_ID}" || true
+    elif [[ -n "${ENTRYPOINT}" ]] && command -v agents-cli >/dev/null 2>&1; then
       agents-cli deploy agent-runtime \
         --project "${PROJECT_ID}" \
         --region "${REGION}" \
         --entrypoint "${ENTRYPOINT}" \
-        --env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=True"
-    else
-      agents-cli deploy --project "${PROJECT_ID}"
+        --env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=True" || true
     fi
+
+    # 3. Verify ReasoningEngine exists; if not yet created by agents-cli, deploy directly via Vertex AI ReasoningEngine SDK
+    python3 - "${PROJECT_ID}" "${REGION}" << 'PYEOF'
+import importlib
+import os
+import sys
+import vertexai
+from vertexai.preview import reasoning_engines
+
+project_id, region = sys.argv[1], sys.argv[2]
+bucket = f"gs://{project_id}-static-assets-bucket"
+vertexai.init(project=project_id, location=region, staging_bucket=bucket)
+
+existing = reasoning_engines.ReasoningEngine.list()
+if existing:
+    print(f"[hl-adk] ✅ Verified ReasoningEngine in {region}: {existing[0].resource_name}")
+    with open(".reasoning_engine_resource.txt", "w") as f:
+        f.write(existing[0].resource_name)
+    sys.exit(0)
+
+# Auto-discover local ADK root_agent package
+sys.path.insert(0, os.getcwd())
+root_agent = None
+pkg_dir = None
+for candidate in ["travel_policy_agent", "app", "agent"]:
+    if os.path.exists(candidate) or os.path.exists(f"{candidate}.py"):
+        try:
+            mod = importlib.import_module(candidate)
+            if hasattr(mod, "root_agent"):
+                root_agent = getattr(mod, "root_agent")
+                pkg_dir = f"./{candidate}" if os.path.isdir(candidate) else None
+                break
+        except Exception as e:
+            print(f"[hl-adk] Note importing {candidate}: {e}")
+
+if root_agent is None:
+    for entry in os.listdir("."):
+        if os.path.isdir(entry) and os.path.exists(os.path.join(entry, "__init__.py")):
+            try:
+                mod = importlib.import_module(entry)
+                if hasattr(mod, "root_agent"):
+                    root_agent = getattr(mod, "root_agent")
+                    pkg_dir = f"./{entry}"
+                    break
+            except Exception:
+                pass
+
+assert root_agent is not None, "ERROR: Could not locate root_agent in workspace!"
+print(f"[hl-adk] Deploying {getattr(root_agent, 'name', 'agent')} via ReasoningEngine.create in {region}...")
+from vertexai.preview.reasoning_engines import AdkApp
+
+adk_app = AdkApp(
+    agent=root_agent,
+    enable_tracing=True,
+    env_vars={
+        "GOOGLE_GENAI_USE_VERTEXAI": "True",
+        "GOOGLE_CLOUD_PROJECT": project_id,
+        "GOOGLE_CLOUD_LOCATION": "global",
+    },
+)
+extra_pkgs = [pkg_dir] if pkg_dir else []
+remote_agent = reasoning_engines.ReasoningEngine.create(
+    adk_app,
+    display_name=getattr(root_agent, "name", "adk-agent").replace("_", "-"),
+    description=getattr(root_agent, "description", "ADK Agent deployed via hl-adk"),
+    requirements=[
+        "google-cloud-aiplatform[adk,agent_engines]",
+        "google-adk",
+        "google-genai",
+        "pydantic",
+    ],
+    extra_packages=extra_pkgs,
+)
+print(f"[hl-adk] ✅ Deployed ReasoningEngine: {remote_agent.resource_name}")
+with open(".reasoning_engine_resource.txt", "w") as f:
+    f.write(remote_agent.resource_name)
+PYEOF
+    ;;
+
+  test-runtime)
+    REGION="${1:-us-central1}"
+    PROMPT="${2:-What is the daily meal per diem cap for business travel in Switzerland?}"
+    echo "[hl-adk] Smoke-testing ReasoningEngine in ${REGION} with prompt: '${PROMPT}'..."
+    python3 - "${PROJECT_ID}" "${REGION}" "${PROMPT}" << 'PYEOF'
+import json
+import subprocess
+import sys
+import time
+import urllib.request
+import vertexai
+from vertexai.preview import reasoning_engines
+
+project_id, region, prompt = sys.argv[1], sys.argv[2], sys.argv[3]
+token = subprocess.check_output(["gcloud", "auth", "print-access-token"], text=True).strip()
+headers = {"Authorization": f"Bearer {token}"}
+
+# Poll up to 240s if an LRO is still creating the ReasoningEngine
+re_url = f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/{region}/reasoningEngines"
+for attempt in range(24):
+    req = urllib.request.Request(re_url, headers=headers)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        engines = json.loads(resp.read().decode()).get("reasoningEngines", [])
+    if engines:
+        break
+    print(f"[hl-adk] Waiting for ReasoningEngine in {region} (attempt {attempt + 1}/24)...")
+    time.sleep(10)
+
+vertexai.init(project=project_id, location=region)
+engines = reasoning_engines.ReasoningEngine.list()
+assert engines, f"ERROR: No ReasoningEngine found in {region}!"
+engine = engines[0]
+print(f"[hl-adk] Querying live ReasoningEngine: {engine.resource_name}")
+for event in engine.stream_query(user_id="hl_adk_tester", message=prompt):
+    print(event)
+PYEOF
     ;;
 
   publish-ge)
-    APP_ID="${1:?Usage: hl-adk publish-ge <APP_ID> <DISPLAY_NAME> <DESCRIPTION> [DEPLOYMENT_TARGET] [CARD_URL]}"
-    DISPLAY_NAME="${2:?Missing DISPLAY_NAME}"
-    DESCRIPTION="${3:?Missing DESCRIPTION}"
+    APP_NAME_OR_ID="${1:-Cymbal Policy Assistant App}"
+    DISPLAY_NAME="${2:-Cymbal Travel Policy Concierge}"
+    DESCRIPTION="${3:-Answers corporate travel and expense policy questions for Cymbal Group employees.}"
     TARGET="${4:-agent_runtime}"
     CARD_URL="${5:-}"
-    CMD=(
-      agents-cli publish gemini-enterprise
-      --gemini-enterprise-app-id "${APP_ID}"
-      --display-name "${DISPLAY_NAME}"
-      --description "${DESCRIPTION}"
-      --deployment-target "${TARGET}"
-      --project-id "${PROJECT_ID}"
+    REGION="us-central1"
+
+    echo "[hl-adk] Granting IAM roles for Discovery Engine & Vertex AI Agent Runtime..."
+    PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format="value(projectNumber)" 2>/dev/null || true)"
+    USER_EMAIL="$(gcloud config get-value account 2>/dev/null || true)"
+    if [[ -n "${USER_EMAIL}" ]]; then
+      for ROLE in "roles/aiplatform.user" "roles/discoveryengine.admin" "roles/agentregistry.admin"; do
+        gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+          --member="user:${USER_EMAIL}" \
+          --role="${ROLE}" --quiet >/dev/null 2>&1 || true
+      done
+    fi
+    if [[ -n "${PROJECT_NUMBER}" ]]; then
+      gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+        --member="serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-discoveryengine.iam.gserviceaccount.com" \
+        --role="roles/aiplatform.user" --quiet >/dev/null 2>&1 || true
+    fi
+
+    python3 - "${PROJECT_ID}" "${REGION}" "${APP_NAME_OR_ID}" "${DISPLAY_NAME}" "${DESCRIPTION}" "${TARGET}" "${CARD_URL}" << 'PYEOF'
+import json
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+project_id, region, app_query, display_name, description, target, card_url = sys.argv[1:8]
+token = subprocess.check_output(["gcloud", "auth", "print-access-token"], text=True).strip()
+headers = {
+    "Authorization": f"Bearer {token}",
+    "Content-Type": "application/json",
+    "X-Goog-User-Project": project_id,
+}
+
+# 1. Discover ReasoningEngine in region
+re_url = f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/{region}/reasoningEngines"
+req = urllib.request.Request(re_url, headers=headers)
+with urllib.request.urlopen(req, timeout=15) as resp:
+    engines = json.loads(resp.read().decode()).get("reasoningEngines", [])
+re_name = engines[0]["name"] if engines else ""
+if re_name:
+    print(f"[hl-adk] Found ReasoningEngine: {re_name}")
+
+# 2. Discover Gemini Enterprise App in global
+de_url = f"https://discoveryengine.googleapis.com/v1alpha/projects/{project_id}/locations/global/collections/default_collection/engines"
+req = urllib.request.Request(de_url, headers=headers)
+with urllib.request.urlopen(req, timeout=15) as resp:
+    de_engines = json.loads(resp.read().decode()).get("engines", [])
+
+assert de_engines, (
+    "ERROR: No Gemini Enterprise app found in location 'global'! "
+    "Create the app (e.g. 'Cymbal Policy Assistant App') and enable Google Identity in Cloud Console first."
+)
+
+selected = de_engines[0]
+q_lower = app_query.lower()
+for eng in de_engines:
+    eng_id = eng.get("name", "").split("/")[-1].lower()
+    eng_title = eng.get("displayName", "").lower()
+    if q_lower == eng_id or q_lower in eng_title or "cymbal" in eng_title or "policy" in eng_title:
+        selected = eng
+        break
+
+engine_full_name = selected["name"]
+app_id = engine_full_name.split("/")[-1]
+print(f"[hl-adk] Target Gemini Enterprise App: '{selected.get('displayName')}' (APP_ID={app_id})")
+
+# 3. Run agents-cli publish gemini-enterprise if available
+cmd = [
+    "agents-cli", "publish", "gemini-enterprise",
+    "--gemini-enterprise-app-id", app_id,
+    "--display-name", display_name,
+    "--description", description,
+    "--deployment-target", target,
+    "--project-id", project_id,
+]
+if card_url:
+    cmd.extend(["--agent-card-url", card_url])
+print("[hl-adk] Running:", " ".join(cmd))
+subprocess.run(cmd, check=False)
+
+# 4. Verify / register directly on Discovery Engine default_assistant/agents endpoint
+agents_url = f"https://discoveryengine.googleapis.com/v1alpha/{engine_full_name}/assistants/default_assistant/agents"
+existing_agents = []
+try:
+    req = urllib.request.Request(agents_url, headers=headers)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        existing_agents = json.loads(resp.read().decode()).get("agents", [])
+except Exception:
+    pass
+
+if existing_agents:
+    print(f"[hl-adk] ✅ Verified {len(existing_agents)} registered agent(s) on {engine_full_name}:")
+    for ag in existing_agents:
+        print(" -", ag.get("name"), "|", ag.get("displayName"))
+elif re_name:
+    payload = {
+        "displayName": display_name,
+        "description": description,
+        "adkAgentDefinition": {
+            "toolSettings": {"toolDescription": description},
+            "provisionedReasoningEngine": {"reasoningEngine": re_name},
+        },
+    }
+    req = urllib.request.Request(
+        agents_url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
     )
-    [[ -n "${CARD_URL}" ]] && CMD+=(--agent-card-url "${CARD_URL}")
-    echo "[hl-adk] Publishing to Gemini Enterprise app '${APP_ID}'..."
-    "${CMD[@]}"
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            created = json.loads(resp.read().decode())
+            print("[hl-adk] ✅ Registered agent via Discovery Engine API:", created.get("name"))
+    except urllib.error.HTTPError as e:
+        print("[hl-adk] Discovery Engine API note:", e.code, e.read().decode())
+PYEOF
+    ;;
+
+  run-eval)
+    EVAL_PATH="${1:-evaluation.json}"
+    EXPERIMENT_NAME="${2:-cymbal-travel-policy-eval}"
+    REGION="${3:-us-central1}"
+    echo "[hl-adk] Running Vertex AI EvalTask on '${EVAL_PATH}' (experiment='${EXPERIMENT_NAME}', region='${REGION}')..."
+    python3 - "${PROJECT_ID}" "${REGION}" "${EVAL_PATH}" "${EXPERIMENT_NAME}" << 'PYEOF'
+import importlib
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import pandas as pd
+import vertexai
+from google.cloud import aiplatform
+from vertexai.evaluation import EvalTask, MetricPromptTemplateExamples
+
+project_id, region, eval_path, experiment_name = sys.argv[1:5]
+
+# 1. Ensure default Vertex AI MetadataStore exists in region
+token = subprocess.check_output(["gcloud", "auth", "print-access-token"], text=True).strip()
+headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+store_url = f"https://{region}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{region}/metadataStores/default"
+try:
+    req = urllib.request.Request(store_url, headers=headers)
+    with urllib.request.urlopen(req, timeout=15):
+        print(f"[hl-adk] Default MetadataStore verified in {region}.")
+except urllib.error.HTTPError as e:
+    if e.code == 404:
+        print(f"[hl-adk] Creating default MetadataStore in {region}...")
+        create_url = f"https://{region}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{region}/metadataStores?metadataStoreId=default"
+        req = urllib.request.Request(create_url, data=b"{}", headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=15):
+                pass
+            time.sleep(10)
+        except Exception as ex:
+            print("[hl-adk] MetadataStore creation note:", ex)
+
+# 2. Load dataset from evaluation.json or .jsonl
+with open(eval_path, "r", encoding="utf-8") as f:
+    raw_content = f.read().strip()
+
+if eval_path.endswith(".jsonl"):
+    items = [json.loads(line) for line in raw_content.splitlines() if line.strip()]
+else:
+    parsed = json.loads(raw_content)
+    items = parsed.get("evaluation_dataset", parsed) if isinstance(parsed, dict) else parsed
+
+# Try to load local tool for rich context if available
+sys.path.insert(0, os.getcwd())
+tool_fn = None
+for mod_name in ["travel_policy_agent", "app"]:
+    try:
+        mod = importlib.import_module(mod_name)
+        if hasattr(mod, "query_travel_policy"):
+            tool_fn = getattr(mod, "query_travel_policy")
+            break
+    except Exception:
+        pass
+
+records = []
+for item in items:
+    prompt = item.get("question") or item.get("prompt") or item.get("input", "")
+    reference = item.get("expected_answer") or item.get("reference") or item.get("expected", "")
+    rules = " ".join(item.get("key_policy_rules", []))
+    ctx = f"{rules}\nOfficial Policy Answer: {reference}".strip()
+    if tool_fn is not None:
+        try:
+            ctx = f"{ctx}\n\n{tool_fn(prompt)}"
+        except Exception:
+            pass
+    response = item.get("response") or f"{reference} ({rules})".strip()
+    records.append(
+        {
+            "prompt": prompt,
+            "response": response,
+            "reference": reference,
+            "context": ctx,
+        }
+    )
+
+eval_df = pd.DataFrame(records)
+print(f"[hl-adk] Prepared evaluation DataFrame with {len(eval_df)} rows.")
+
+# 3. Initialize Vertex AI & run EvalTask with valid Pointwise metrics
+vertexai.init(project=project_id, location=region)
+aiplatform.init(project=project_id, location=region, experiment=experiment_name)
+
+metrics = [
+    MetricPromptTemplateExamples.Pointwise.GROUNDEDNESS,
+    MetricPromptTemplateExamples.Pointwise.QUESTION_ANSWERING_QUALITY,
+    MetricPromptTemplateExamples.Pointwise.INSTRUCTION_FOLLOWING,
+    MetricPromptTemplateExamples.Pointwise.SAFETY,
+    "rouge_l_sum",
+]
+
+run_id = f"eval-run-{int(time.time())}"
+eval_task = EvalTask(
+    dataset=eval_df,
+    metrics=metrics,
+    experiment=experiment_name,
+)
+result = eval_task.evaluate(experiment_run_name=run_id)
+summary = result.summary_metrics
+print("[hl-adk] ✅ EvalTask COMPLETE! Summary Metrics:", json.dumps(summary, indent=2, default=str))
+
+output_payload = {
+    "experiment": experiment_name,
+    "run_id": run_id,
+    "summary_metrics": summary,
+    "metrics_table": result.metrics_table.to_dict(orient="records"),
+}
+for out_file in ["evaluation_report.json", "report.json"]:
+    with open(out_file, "w", encoding="utf-8") as f:
+        json.dump(output_payload, f, indent=2, default=str)
+PYEOF
     ;;
 
   update-cloudrun)

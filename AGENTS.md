@@ -31,11 +31,19 @@
 - **ADK Callback Return Semantics**:
   - `before_tool_callback(tool: BaseTool, args: dict, tool_context: ToolContext) -> dict | None`: Return `None` to **allow** tool execution; return a `dict` (e.g., `{"status": "error", "reason": "Blocked by policy"}`) to **block/short-circuit** the tool call.
   - `before_model_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> LlmResponse | None`: Mutate `llm_request.contents` in place and return `None` to proceed to the model, or return an `LlmResponse` to short-circuit inference.
-- **Cloud Run & Container Packaging**:
-  - When mounting ADK on FastAPI in a container with a read-only root filesystem, call `get_fast_api_app(adk_app=root_agent, web=False)`.
-  - When updating an existing Cloud Run service's image or environment variable, ALWAYS use `gcloud run services update <svc> --region=<region> --image=<img_uri>` or `--update-env-vars="KEY=VAL"`. NEVER use `--set-env-vars` on an existing service unless explicitly replacing all variables, as it wipes existing database and VPC settings.
+- **Deployment Target Separation (`Agent Runtime` vs. `Cloud Run` — NEVER MIX)**:
+  - **Target A — Vertex AI Agent Runtime (`ReasoningEngine` / `deployment_target: "agent_runtime"`)**:
+    - Only require `<agent_pkg>/__init__.py` (`root_agent = Agent(...)`) and `.env`. **NEVER** create `main.py`, **NEVER** call `get_fast_api_app`, and **NEVER** start `uvicorn` on `localhost:8000` unless the lab explicitly grades a local `:8000` FastAPI server.
+    - Always check `ReasoningEngine.list()` before deploying so you never trigger duplicate 5-minute LRO builds.
+    - Prefer `hl-adk` one-shot subcommands over ad-hoc `python3 -c` scripts: `hl-adk deploy-runtime us-central1`, `hl-adk test-runtime us-central1 "<prompt>"`, `hl-adk publish-ge "<App Name or ID>"`, and `hl-adk run-eval evaluation.json <experiment-name> us-central1`.
+  - **Target B — Cloud Run / FastAPI Container (`deployment_target: "cloud_run"` or local `:8000` service)**:
+    - When mounting ADK on FastAPI in a container with a read-only root filesystem, call `get_fast_api_app(agents_dir=".", web=False)` (never pass the non-existent `adk_app=` kwarg, and **NEVER** iterate `[r.methods for r in app.routes]` because Starlette `APIWebSocketRoute` has no `.methods` attribute; use `getattr(r, "methods", ["WS"])` if inspecting routes).
+    - When updating an existing Cloud Run service's image or environment variable, ALWAYS use `gcloud run services update <svc> --region=<region> --image=<img_uri>` or `--update-env-vars="KEY=VAL"`. NEVER use `--set-env-vars` on an existing service unless explicitly replacing all variables, as it wipes existing database and VPC settings.
+- **Vertex AI `EvalTask` Invariants**:
+  - Always ensure the `default` Vertex AI `MetadataStore` exists in the regional location (`us-central1`) before running `EvalTask`.
+  - Use ONLY valid `MetricPromptTemplateExamples.Pointwise` constants (`GROUNDEDNESS`, `QUESTION_ANSWERING_QUALITY`, `INSTRUCTION_FOLLOWING`, `SAFETY`, `"rouge_l_sum"`). **NEVER** reference `.RELEVANCE` (does not exist and raises `AttributeError`).
 
 ## 2. Fast Verification Loop & 3-Turn Circuit Breaker
-1. After every code change, run `hl-verify .` (or `python3 ~/do-harness-lite/scripts/verify_lite.py .`) plus any workspace test/verification command (`pytest`, `npm test`, ticket verify script).
-2. Never declare a task complete until `hl-verify .` exits with code `0` and any required local server (`localhost:8000` / `localhost:8080`) is verified listening.
+1. After every code change, run `hl-verify .` (or `python3 ~/do-harness-lite/scripts/verify_lite.py .`) plus any workspace test/verification command (`pytest`, `npm test`, `hl-adk test-runtime`, or ticket verify script).
+2. Never declare a task complete until `hl-verify .` exits with code `0` and the target deployment (`ReasoningEngine` for Agent Runtime, or `localhost:8000` / Cloud Run URL for FastAPI services) is verified responding.
 3. **3-Turn Debug-Spiral Circuit Breaker**: If 3 consecutive attempts fail on the same error, STOP editing code. Run `hl-env`, read the full traceback and logs, state the failed assumption, and verify the exact API/schema before making the next surgical edit.
