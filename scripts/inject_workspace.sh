@@ -37,8 +37,14 @@ AGENTS_DST="${TARGET_DIR}/AGENTS.md"
 MARKER="<!-- do-harness-lite-workspace -->"
 
 if [[ -f "${AGENTS_DST}" ]]; then
-  if grep -qF "${MARKER}" "${AGENTS_DST}" 2>/dev/null; then
+  if grep -qF "${MARKER}" "${AGENTS_DST}" 2>/dev/null && [[ "$(wc -l < "${AGENTS_DST}")" -gt 5 ]]; then
     echo "[hl-inject] AGENTS.md in ${TARGET_DIR} already contains do-harness-lite rules."
+  elif grep -qF "${MARKER}" "${AGENTS_DST}" 2>/dev/null; then
+    {
+      echo "${MARKER}"
+      cat "${AGENTS_SRC}"
+    } > "${AGENTS_DST}"
+    echo "[hl-inject] Repaired incomplete ${AGENTS_DST} with full do-harness-lite rules."
   else
     {
       echo ""
