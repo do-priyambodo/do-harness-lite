@@ -22,6 +22,7 @@ chmod +x "${REPO_DIR}/scripts/"*.sh "${REPO_DIR}/scripts/"*.py 2>/dev/null || tr
 
 ln -sf "${REPO_DIR}/scripts/check_env.sh"        "${BIN_DIR}/hl-env"
 ln -sf "${REPO_DIR}/scripts/verify_lite.py"      "${BIN_DIR}/hl-verify"
+ln -sf "${REPO_DIR}/scripts/verify_lite.py"      "${BIN_DIR}/verify_lite.py"
 ln -sf "${REPO_DIR}/scripts/rescue.sh"           "${BIN_DIR}/hl-rescue"
 ln -sf "${REPO_DIR}/scripts/adk_ops.sh"          "${BIN_DIR}/hl-adk"
 ln -sf "${REPO_DIR}/scripts/inject_workspace.sh" "${BIN_DIR}/hl-inject"

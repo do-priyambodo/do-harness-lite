@@ -142,131 +142,129 @@ case "${SUBCMD}" in
     fi
 
     echo "[hl-adk] Running hl-verify before deploy..."
-    "$(dirname "${BASH_SOURCE[0]}")/verify_lite.py" .
-
-    # 1. Check if a ReasoningEngine already exists in REGION (idempotency guard against duplicate 5-min builds!)
-    EXISTING_RE="$(python3 - "${PROJECT_ID}" "${REGION}" << 'PYEOF'
-import json, sys, subprocess, urllib.request
-project_id, region = sys.argv[1], sys.argv[2]
-try:
-    token = subprocess.check_output(["gcloud", "auth", "print-access-token"], text=True).strip()
-    url = f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/{region}/reasoningEngines"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        data = json.loads(resp.read().decode())
-    engines = data.get("reasoningEngines", [])
-    if engines:
-        print(engines[0]["name"])
-except Exception:
-    pass
-PYEOF
-)"
-    if [[ -n "${EXISTING_RE}" ]]; then
-      echo "[hl-adk] ✅ Existing ReasoningEngine already deployed in ${REGION}: ${EXISTING_RE}"
-      echo "${EXISTING_RE}" > .reasoning_engine_resource.txt
-      exit 0
+    SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")" && pwd)"
+    if [[ -x "${SCRIPT_DIR}/verify_lite.py" ]]; then
+      "${SCRIPT_DIR}/verify_lite.py" .
+    elif command -v hl-verify >/dev/null 2>&1; then
+      hl-verify .
     fi
 
-    # 2. Try agents-cli deploy first
-    if [[ ! -f "agents-cli-manifest.yaml" ]] && command -v agents-cli >/dev/null 2>&1; then
-      agents-cli scaffold enhance . --deployment-target agent_runtime 2>/dev/null || true
-      [[ -f "Dockerfile" ]] && sed -i '/^ENV[[:space:]]\+PORT/d' Dockerfile || true
+    # 1. Auto-scaffold agents-cli project layout (app/agent.py, app/fast_api_app.py, Dockerfile, agents-cli-manifest.yaml) if missing
+    if [[ ! -f "agents-cli-manifest.yaml" || ! -f "app/fast_api_app.py" ]] && command -v agents-cli >/dev/null 2>&1; then
+      echo "[hl-adk] Scaffolding agents-cli ADK container structure for Agent Runtime..."
+      rm -rf /tmp/_hl_acli_scaffold
+      (cd /tmp && agents-cli scaffold create _hl_acli_scaffold --agent adk --prototype >/dev/null 2>&1) || \
+        (cd /tmp && agents-cli create _hl_acli_scaffold --prototype --yes --region "${REGION}" >/dev/null 2>&1) || true
+      if [[ -d "/tmp/_hl_acli_scaffold" ]]; then
+        (cd /tmp/_hl_acli_scaffold && agents-cli scaffold enhance . --deployment-target agent_runtime --cicd-runner skip >/dev/null 2>&1) || \
+          (cd /tmp/_hl_acli_scaffold && agents-cli scaffold enhance . --deployment-target agent_runtime >/dev/null 2>&1) || true
+        # Preserve existing custom agent implementation if already written in app/agent.py or travel_policy_agent/__init__.py
+        CUSTOM_AGENT_CODE=""
+        if [[ -f "travel_policy_agent/__init__.py" ]]; then
+          CUSTOM_AGENT_CODE="$(cat travel_policy_agent/__init__.py)"
+        elif [[ -f "app/agent.py" ]]; then
+          CUSTOM_AGENT_CODE="$(cat app/agent.py)"
+        fi
+        cp -rn /tmp/_hl_acli_scaffold/* /tmp/_hl_acli_scaffold/.gitignore . 2>/dev/null || true
+        if [[ -n "${CUSTOM_AGENT_CODE}" ]]; then
+          mkdir -p app
+          printf '%s\n' "${CUSTOM_AGENT_CODE}" > app/agent.py
+        fi
+        rm -rf /tmp/_hl_acli_scaffold
+      fi
     fi
-    if [[ -f "agents-cli-manifest.yaml" ]] && command -v agents-cli >/dev/null 2>&1; then
-      sed -i 's/deployment_target: "none"/deployment_target: "agent_runtime"/g' agents-cli-manifest.yaml
-      echo "[hl-adk] Deploying via agents-cli deploy (deployment_target: agent_runtime, region: ${REGION})..."
-      agents-cli deploy --project "${PROJECT_ID}" --region "${REGION}" 2>/dev/null || \
-        agents-cli deploy --project "${PROJECT_ID}" || true
-    elif [[ -n "${ENTRYPOINT}" ]] && command -v agents-cli >/dev/null 2>&1; then
-      agents-cli deploy agent-runtime \
+
+    # 2. If travel_policy_agent/__init__.py exists, sync it to app/agent.py and ensure `app = App(root_agent=root_agent, name="app")` is exported
+    mkdir -p app
+    if [[ -f "travel_policy_agent/__init__.py" && ! -f "app/agent.py" ]]; then
+      cp -f travel_policy_agent/__init__.py app/agent.py
+    elif [[ -f "travel_policy_agent/__init__.py" ]] && grep -q "PromptDesk" app/agent.py 2>/dev/null; then
+      cp -f travel_policy_agent/__init__.py app/agent.py
+    fi
+    if [[ -f "app/agent.py" ]] && ! grep -q "App(root_agent=" app/agent.py 2>/dev/null; then
+      cat >> app/agent.py << 'APPEOF'
+
+from google.adk.apps import App  # noqa: E402
+
+app = App(root_agent=root_agent, name="app")
+APPEOF
+    fi
+
+    # Copy any .txt / .json grounding files into app/ so `COPY ./app ./app` in Dockerfile includes them inside /code/app/
+    for data_file in *.txt; do
+      [[ -f "${data_file}" ]] && cp -f "${data_file}" "app/${data_file}" || true
+    done
+
+    # 3. Ensure agents-cli-manifest.yaml targets region=${REGION} and deployment_target=agent_runtime
+    if [[ -f "agents-cli-manifest.yaml" ]]; then
+      sed -i "s/^region:.*/region: ${REGION}/g" agents-cli-manifest.yaml
+      sed -i 's/deployment_target:.*/deployment_target: agent_runtime/g' agents-cli-manifest.yaml
+    fi
+
+    # 4. Ensure Dockerfile exists, has no reserved ENV PORT, and uses `uv sync` (so Cloud Build doesn't fail if uv.lock is absent)
+    if [[ ! -f "Dockerfile" ]] && command -v agents-cli >/dev/null 2>&1; then
+      agents-cli scaffold enhance . --deployment-target agent_runtime --cicd-runner skip 2>/dev/null || \
+        agents-cli scaffold enhance . --deployment-target agent_runtime 2>/dev/null || true
+    fi
+    if [[ -f "Dockerfile" ]]; then
+      sed -i '/^ENV[[:space:]]\+PORT/d' Dockerfile
+      sed -i 's/uv sync --frozen/uv sync/g' Dockerfile
+    fi
+
+    # 5. Deploy via agents-cli deploy (compiles python:3.12-slim container in Cloud Build -> Artifact Registry -> Agent Runtime)
+    if command -v agents-cli >/dev/null 2>&1 && [[ -f "agents-cli-manifest.yaml" ]]; then
+      echo "[hl-adk] Deploying container to Agent Runtime (${REGION}) via agents-cli deploy..."
+      agents-cli deploy \
         --project "${PROJECT_ID}" \
-        --region "${REGION}" \
-        --entrypoint "${ENTRYPOINT}" \
-        --env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=global,GOOGLE_GENAI_USE_VERTEXAI=True" || true
+        --deployment-target agent_runtime \
+        --no-confirm-project || \
+      agents-cli deploy \
+        --project "${PROJECT_ID}" || true
     fi
 
-    # 3. Verify ReasoningEngine exists; if not yet created by agents-cli, deploy directly via Vertex AI ReasoningEngine SDK
+    # 6. Verify deployment_metadata.json or ReasoningEngine in REGION
     python3 - "${PROJECT_ID}" "${REGION}" << 'PYEOF'
-import importlib
-import os
-import sys
-import vertexai
-from vertexai.preview import reasoning_engines
+import json, os, subprocess, sys, urllib.request
 
 project_id, region = sys.argv[1], sys.argv[2]
-bucket = f"gs://{project_id}-static-assets-bucket"
-vertexai.init(project=project_id, location=region, staging_bucket=bucket)
+if os.path.exists("deployment_metadata.json"):
+    try:
+        meta = json.load(open("deployment_metadata.json", encoding="utf-8"))
+        rid = meta.get("remote_agent_runtime_id", "")
+        if rid:
+            print(f"[hl-adk] ✅ Deployed Agent Runtime resource (from deployment_metadata.json): {rid}")
+            with open(".reasoning_engine_resource.txt", "w") as f:
+                f.write(rid)
+            sys.exit(0)
+    except Exception:
+        pass
 
-existing = reasoning_engines.ReasoningEngine.list()
-if existing:
-    print(f"[hl-adk] ✅ Verified ReasoningEngine in {region}: {existing[0].resource_name}")
+token = subprocess.check_output(["gcloud", "auth", "print-access-token"], text=True).strip()
+url = f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/{region}/reasoningEngines"
+req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+with urllib.request.urlopen(req, timeout=15) as resp:
+    engines = json.loads(resp.read().decode()).get("reasoningEngines", [])
+if engines:
+    print(f"[hl-adk] ✅ Verified ReasoningEngine in {region}: {engines[0]['name']}")
     with open(".reasoning_engine_resource.txt", "w") as f:
-        f.write(existing[0].resource_name)
-    sys.exit(0)
-
-# Auto-discover local ADK root_agent package
-sys.path.insert(0, os.getcwd())
-root_agent = None
-pkg_dir = None
-for candidate in ["travel_policy_agent", "app", "agent"]:
-    if os.path.exists(candidate) or os.path.exists(f"{candidate}.py"):
-        try:
-            mod = importlib.import_module(candidate)
-            if hasattr(mod, "root_agent"):
-                root_agent = getattr(mod, "root_agent")
-                pkg_dir = f"./{candidate}" if os.path.isdir(candidate) else None
-                break
-        except Exception as e:
-            print(f"[hl-adk] Note importing {candidate}: {e}")
-
-if root_agent is None:
-    for entry in os.listdir("."):
-        if os.path.isdir(entry) and os.path.exists(os.path.join(entry, "__init__.py")):
-            try:
-                mod = importlib.import_module(entry)
-                if hasattr(mod, "root_agent"):
-                    root_agent = getattr(mod, "root_agent")
-                    pkg_dir = f"./{entry}"
-                    break
-            except Exception:
-                pass
-
-assert root_agent is not None, "ERROR: Could not locate root_agent in workspace!"
-print(f"[hl-adk] Deploying {getattr(root_agent, 'name', 'agent')} via ReasoningEngine.create in {region}...")
-from vertexai.preview.reasoning_engines import AdkApp
-
-adk_app = AdkApp(
-    agent=root_agent,
-    enable_tracing=True,
-    env_vars={
-        "GOOGLE_GENAI_USE_VERTEXAI": "True",
-        "GOOGLE_CLOUD_PROJECT": project_id,
-        "GOOGLE_CLOUD_LOCATION": "global",
-    },
-)
-extra_pkgs = [pkg_dir] if pkg_dir else []
-remote_agent = reasoning_engines.ReasoningEngine.create(
-    adk_app,
-    display_name=getattr(root_agent, "name", "adk-agent").replace("_", "-"),
-    description=getattr(root_agent, "description", "ADK Agent deployed via hl-adk"),
-    requirements=[
-        "google-cloud-aiplatform[adk,agent_engines]",
-        "google-adk",
-        "google-genai",
-        "pydantic",
-    ],
-    extra_packages=extra_pkgs,
-)
-print(f"[hl-adk] ✅ Deployed ReasoningEngine: {remote_agent.resource_name}")
-with open(".reasoning_engine_resource.txt", "w") as f:
-    f.write(remote_agent.resource_name)
+        f.write(engines[0]["name"])
+else:
+    print(f"[hl-adk] WARN: No ReasoningEngine found in {region} yet. Check `agents-cli deploy --status`.", file=sys.stderr)
+    sys.exit(1)
 PYEOF
     ;;
 
   test-runtime)
     REGION="${1:-us-central1}"
     PROMPT="${2:-What is the daily meal per diem cap for business travel in Switzerland?}"
-    echo "[hl-adk] Smoke-testing ReasoningEngine in ${REGION} with prompt: '${PROMPT}'..."
+    echo "[hl-adk] Smoke-testing Agent Runtime in ${REGION} with prompt: '${PROMPT}'..."
+    if [[ -f "deployment_metadata.json" ]] && command -v agents-cli >/dev/null 2>&1; then
+      RUNTIME_ID="$(python3 -c "import json; print(json.load(open('deployment_metadata.json')).get('remote_agent_runtime_id',''))" 2>/dev/null || true)"
+      if [[ -n "${RUNTIME_ID}" ]]; then
+        echo "[hl-adk] Testing via agents-cli run --mode adk against ${RUNTIME_ID}..."
+        agents-cli run --url "https://${REGION}-aiplatform.googleapis.com/v1/${RUNTIME_ID}" --mode adk "${PROMPT}" && exit 0
+      fi
+    fi
     python3 - "${PROJECT_ID}" "${REGION}" "${PROMPT}" << 'PYEOF'
 import json
 import subprocess
@@ -280,7 +278,6 @@ project_id, region, prompt = sys.argv[1], sys.argv[2], sys.argv[3]
 token = subprocess.check_output(["gcloud", "auth", "print-access-token"], text=True).strip()
 headers = {"Authorization": f"Bearer {token}"}
 
-# Poll up to 240s if an LRO is still creating the ReasoningEngine
 re_url = f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/{region}/reasoningEngines"
 for attempt in range(24):
     req = urllib.request.Request(re_url, headers=headers)
@@ -340,12 +337,20 @@ headers = {
     "X-Goog-User-Project": project_id,
 }
 
-# 1. Discover ReasoningEngine in region
-re_url = f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/{region}/reasoningEngines"
-req = urllib.request.Request(re_url, headers=headers)
-with urllib.request.urlopen(req, timeout=15) as resp:
-    engines = json.loads(resp.read().decode()).get("reasoningEngines", [])
-re_name = engines[0]["name"] if engines else ""
+# 1. Discover ReasoningEngine in region (check deployment_metadata.json first, then REST API)
+re_name = ""
+try:
+    with open("deployment_metadata.json", "r", encoding="utf-8") as f:
+        re_name = json.load(f).get("remote_agent_runtime_id", "")
+except Exception:
+    pass
+
+if not re_name:
+    re_url = f"https://{region}-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/{region}/reasoningEngines"
+    req = urllib.request.Request(re_url, headers=headers)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        engines = json.loads(resp.read().decode()).get("reasoningEngines", [])
+    re_name = engines[0]["name"] if engines else ""
 if re_name:
     print(f"[hl-adk] Found ReasoningEngine: {re_name}")
 
@@ -466,20 +471,33 @@ except urllib.error.HTTPError as e:
         except Exception as ex:
             print("[hl-adk] MetadataStore creation note:", ex)
 
-# 2. Load dataset from evaluation.json or .jsonl
+# 2. Load dataset from evaluation.json or evaluation.jsonl (and sync both files!)
+if not os.path.exists(eval_path):
+    if os.path.exists("evaluation.jsonl"):
+        eval_path = "evaluation.jsonl"
+    elif os.path.exists("evaluation.json"):
+        eval_path = "evaluation.json"
+
 with open(eval_path, "r", encoding="utf-8") as f:
     raw_content = f.read().strip()
 
-if eval_path.endswith(".jsonl"):
+if eval_path.endswith(".jsonl") or (raw_content.startswith("{") and "\n{" in raw_content):
     items = [json.loads(line) for line in raw_content.splitlines() if line.strip()]
+    if not os.path.exists("evaluation.json"):
+        with open("evaluation.json", "w", encoding="utf-8") as out_f:
+            json.dump({"evaluation_dataset": items}, out_f, indent=2)
 else:
     parsed = json.loads(raw_content)
     items = parsed.get("evaluation_dataset", parsed) if isinstance(parsed, dict) else parsed
+    if not os.path.exists("evaluation.jsonl") and isinstance(items, list):
+        with open("evaluation.jsonl", "w", encoding="utf-8") as out_f:
+            for it in items:
+                out_f.write(json.dumps(it) + "\n")
 
 # Try to load local tool for rich context if available
 sys.path.insert(0, os.getcwd())
 tool_fn = None
-for mod_name in ["travel_policy_agent", "app"]:
+for mod_name in ["app.agent", "travel_policy_agent", "app"]:
     try:
         mod = importlib.import_module(mod_name)
         if hasattr(mod, "query_travel_policy"):
