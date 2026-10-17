@@ -5,12 +5,14 @@
 2. **Preserve Contracts**: Never rename required entry-point files (`app/agent.py`, `main.py`, `<pkg>/__init__.py`), exported symbols (`root_agent`, `app`), function names, parameter names, or port numbers (`8000`, `8080`, `3002`, `5000`) expected by local test or verification scripts.
 3. **Preserve Existing Guardrails**: If the workspace already contains `GEMINI.md`, `.agents/CONTEXT.md`, `.agents/hooks.json`, or `.pre-commit-config.yaml`, keep them intact and additive.
 
-## 1. Google ADK & Vertex AI Runtime Invariants
-- **Default Google Gemini Model Tiering (`GOOGLE_CLOUD_LOCATION="global"`)**:
-  - **Pro / Root Orchestrator & Complex Reasoning Default**: **`Gemini 4 Argon`** — Vertex AI / ADK ID: `gemini-4-argon` (`GEMINI_MODEL` / `ADK_PRO_MODEL`; Antigravity CLI `agy --model`: `gemini-4-argon-high` / `gemini-4-argon-medium`).
-  - **Fast / Sub-Agent & High-Throughput Default**: **`Gemini 3.8 Flash`** — Vertex AI / ADK ID: `gemini-3.8-flash` (`GEMINI_FAST_MODEL` / `ADK_FAST_MODEL`; Antigravity CLI `agy --model`: `gemini-3.8-flash-high` / `gemini-3.8-flash-medium`).
-  - **Ultra-Low-Cost Classification / Routing**: **`Gemini 3.5 Flash-Lite`** (`gemini-3.5-flash-lite`).
-  - **Lab Grader Override**: Always honor `spec.md` / `.env.example` first if an automated Qwiklabs grader check explicitly requires a legacy model ID (`gemini-3.6-flash`, `gemini-3.1-pro-preview`, `gemini-3-flash-preview`).
+## 1. Google ADK & Vertex AI Runtime Invariants (`RULES-AI` Exam-Speed Edition)
+- **Model Selection & Lab Provisioned Throughput Precedence**:
+  - **Lab Grader & Provisioned Throughput Win First**: In Qwiklabs / Challenge Labs, **always preserve the exact model specified in `spec.md`, `.env`, or starter code** (e.g., `gemini-3.6-flash` on `global`, which has Provisioned Throughput enabled to prevent `429 Resource Exhausted`). NEVER change the model name unless explicitly instructed.
+  - **When Unspecified**: Default to `gemini-3.8-flash` (fast/sub-agent) or `gemini-4-argon` (complex orchestrator) on `GOOGLE_CLOUD_LOCATION="global"`.
+- **Anti-"Decorative ADK" & Canonical `agents-cli` Contract (`app/agent.py`)**:
+  - **No Raw `generate_content` or Hollow `root_agent`**: Never call `client.models.generate_content()` directly inside an agent module (`app/agent.py` or `<pkg>/__init__.py`), and never export a hollow `root_agent = Agent(...)` with `tools=[]` and `sub_agents=[]`.
+  - **Export BOTH `root_agent` and `app`**: In `app/agent.py` (and `<pkg>/__init__.py`), always export `root_agent = Agent(...)` AND `from google.adk.apps import App; app = App(root_agent=root_agent, name="app")` so `agents-cli deploy` (`FROM python:3.12-slim` container build) and `agents-cli playground` work on the first try without Python 3.14 `cloudpickle` (`Code 13`) failures.
+  - **Thinking Token Budget & Tool Safety**: When setting `generate_content_config`, use `types.GenerateContentConfig(max_output_tokens=32768)` so thinking tokens never truncate output (`MAX_TOKENS`). Never pass user/LLM input to `eval()`, `exec()`, `subprocess.run(..., shell=True)`, or unparameterized SQL strings.
 - **Global vs. Regional Endpoint Split**:
   - **Gemini Model Inference**: When using **`Gemini 4 Argon` (`gemini-4-argon`)**, **`Gemini 3.8 Flash` (`gemini-3.8-flash`)**, or legacy lab models (`gemini-3.6-flash`, `gemini-3.1-pro-preview`, `gemini-3-flash-preview`) on Vertex AI, set `GOOGLE_GENAI_USE_VERTEXAI="True"` and `GOOGLE_CLOUD_LOCATION="global"` in `.env` (or `os.environ` before initializing `genai.Client()` / `Agent()`).
   - **Agent Runtime (`ReasoningEngine`), Vertex AI `EvalTask`, & Cloud Run**: Always use the **regional** location (`us-central1`, `europe-west1`, etc.) in `agents-cli-manifest.yaml`, `--region`, and `vertexai.init(project=..., location=...)`.

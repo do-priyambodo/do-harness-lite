@@ -139,6 +139,14 @@ def check_python_file(
         if not isinstance(node, ast.Call):
             continue
         fn_name = _call_func_name(node)
+        if fn_name in {"generate_content", "generate_content_stream"} and py_path.name in {"agent.py", "__init__.py"}:
+            if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Attribute) and node.func.value.attr == "models":
+                warnings.append(
+                    f"{py_path}:{node.lineno} [RAW_GENERATE_IN_AGENT] "
+                    f"Direct 'models.{fn_name}()' call inside {py_path.name}; "
+                    f"use ADK Agent(..., tools=[...]) and Runner instead of decorative ADK."
+                )
+            continue
         if fn_name == "get_fast_api_app":
             kw_names = {kw.arg for kw in node.keywords if kw.arg}
             if "adk_app" in kw_names:
@@ -153,6 +161,18 @@ def check_python_file(
             continue
 
         kw_map = {kw.arg: kw.value for kw in node.keywords if kw.arg}
+
+        # 0. Check for hollow Agent(..., tools=[], sub_agents=[])
+        if fn_name in {"Agent", "LlmAgent"}:
+            t_node = kw_map.get("tools")
+            s_node = kw_map.get("sub_agents")
+            t_empty = isinstance(t_node, (ast.List, ast.Tuple)) and len(t_node.elts) == 0
+            s_empty = s_node is None or (isinstance(s_node, (ast.List, ast.Tuple)) and len(s_node.elts) == 0)
+            if t_empty and s_empty:
+                warnings.append(
+                    f"{py_path}:{node.lineno} [HOLLOW_AGENT] "
+                    f"{fn_name} has empty tools=[] and no sub_agents; attach real tools or sub_agents."
+                )
 
         # 1. Validate Agent(name=...)
         name_node = kw_map.get("name")
