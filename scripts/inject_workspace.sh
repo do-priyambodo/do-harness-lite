@@ -4,7 +4,8 @@
 # hides it via .git/info/exclude so 'git status' stays 100% clean.
 set -euo pipefail
 
-HARNESS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+HARNESS_ROOT="$(cd "$(dirname "${SCRIPT_PATH}")/.." && pwd)"
 TARGET_DIR="${1:-$(pwd)}"
 
 if [[ ! -d "${TARGET_DIR}" ]]; then
@@ -13,7 +14,25 @@ if [[ ! -d "${TARGET_DIR}" ]]; then
 fi
 
 TARGET_DIR="$(cd "${TARGET_DIR}" && pwd)"
-AGENTS_SRC="${HARNESS_ROOT}/AGENTS.md"
+AGENTS_SRC=""
+for candidate in \
+  "${HARNESS_ROOT}/AGENTS.md" \
+  "${DO_HARNESS_LITE_DIR:-}/AGENTS.md" \
+  "${HOME}/.local/AGENTS.md" \
+  "/tmp/do-harness-lite/AGENTS.md" \
+  "${HOME}/do-harness-lite/AGENTS.md" \
+  "${HOME}/.agents/AGENTS.md"; do
+  if [[ -n "${candidate}" && -f "${candidate}" ]]; then
+    AGENTS_SRC="${candidate}"
+    break
+  fi
+done
+
+if [[ -z "${AGENTS_SRC}" ]]; then
+  echo "ERROR: Could not locate AGENTS.md in ${HARNESS_ROOT} or fallback paths." >&2
+  exit 1
+fi
+
 AGENTS_DST="${TARGET_DIR}/AGENTS.md"
 MARKER="<!-- do-harness-lite-workspace -->"
 

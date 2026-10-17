@@ -25,6 +25,7 @@ ln -sf "${REPO_DIR}/scripts/verify_lite.py"      "${BIN_DIR}/hl-verify"
 ln -sf "${REPO_DIR}/scripts/rescue.sh"           "${BIN_DIR}/hl-rescue"
 ln -sf "${REPO_DIR}/scripts/adk_ops.sh"          "${BIN_DIR}/hl-adk"
 ln -sf "${REPO_DIR}/scripts/inject_workspace.sh" "${BIN_DIR}/hl-inject"
+cp -f "${REPO_DIR}/AGENTS.md"                    "${HOME}/.local/AGENTS.md"
 
 # 3. Install skills into all global discovery paths (Antigravity 2.0, agy CLI, Gemini CLI)
 for skill_dir in "${REPO_DIR}/.agents/skills/"*/; do

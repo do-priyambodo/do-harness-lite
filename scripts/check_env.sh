@@ -2,7 +2,30 @@
 # check_env.sh (hl-env) — 60-Second Environment & Workspace Diagnostic
 # Run this FIRST in any new VM or project folder to inspect GCP config,
 # deployed Cloud Run services, local ports, env vars, and workspace structure.
+# Supports both direct invocation (`hl-env`) and shell eval (`eval "$(hl-env)"`).
 set -uo pipefail
+
+if [[ "${1:-}" == "--export" || "${1:-}" == "--env" ]]; then
+  PROJECT_ID="$(gcloud config get-value project 2>/dev/null || true)"
+  [[ "${PROJECT_ID}" == "(unset)" ]] && PROJECT_ID=""
+  cat <<EOF
+export PATH="\${HOME}/.local/bin:\${PATH}"
+export PROJECT_ID="${PROJECT_ID}"
+export GOOGLE_CLOUD_PROJECT="${PROJECT_ID}"
+export GOOGLE_GENAI_USE_VERTEXAI="True"
+export GOOGLE_CLOUD_LOCATION="global"
+EOF
+  exit 0
+fi
+
+# If stdout is captured (e.g., `eval "$(hl-env)"`), send human-readable output
+# to stderr so it still displays on the terminal while stdout emits clean `export` lines.
+CAPTURED_STDOUT=0
+if [[ ! -t 1 ]]; then
+  CAPTURED_STDOUT=1
+  exec 3>&1
+  exec 1>&2
+fi
 
 WORKDIR="${1:-$(pwd)}"
 cd "${WORKDIR}" || exit 1
@@ -27,14 +50,16 @@ done
 # 2. Google Cloud Project & Region
 echo ""
 echo "[2/7] Google Cloud Identity & Project"
+PROJECT_ID=""
 if command -v gcloud >/dev/null 2>&1; then
   PROJECT_ID="$(gcloud config get-value project 2>/dev/null || true)"
+  [[ "${PROJECT_ID}" == "(unset)" ]] && PROJECT_ID=""
   ACCOUNT="$(gcloud config get-value account 2>/dev/null || true)"
   REGION="$(gcloud config get-value compute/region 2>/dev/null || gcloud config get-value run/region 2>/dev/null || true)"
   echo "  Active Account : ${ACCOUNT:-<unset>}"
   echo "  Project ID     : ${PROJECT_ID:-<unset>}"
   echo "  Default Region : ${REGION:-us-central1 (fallback)}"
-  if [[ -n "${PROJECT_ID}" && "${PROJECT_ID}" != "(unset)" ]]; then
+  if [[ -n "${PROJECT_ID}" ]]; then
     PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format="value(projectNumber)" 2>/dev/null || true)"
     echo "  Project Number : ${PROJECT_NUMBER:-<unavailable>}"
   fi
@@ -45,9 +70,9 @@ fi
 # 3. Environment Variables & .env Inspection
 echo ""
 echo "[3/7] Shell & .env Variables (Names & Non-Secret Values Only)"
-echo "  GOOGLE_CLOUD_PROJECT  = ${GOOGLE_CLOUD_PROJECT:-<unset>}"
-echo "  GOOGLE_CLOUD_LOCATION = ${GOOGLE_CLOUD_LOCATION:-<unset>}"
-echo "  GOOGLE_GENAI_USE_VERTEXAI = ${GOOGLE_GENAI_USE_VERTEXAI:-<unset>}"
+echo "  GOOGLE_CLOUD_PROJECT  = ${GOOGLE_CLOUD_PROJECT:-${PROJECT_ID:-<unset>}}"
+echo "  GOOGLE_CLOUD_LOCATION = ${GOOGLE_CLOUD_LOCATION:-global}"
+echo "  GOOGLE_GENAI_USE_VERTEXAI = ${GOOGLE_GENAI_USE_VERTEXAI:-True}"
 
 while IFS= read -r -d '' envfile; do
   echo "  Found env file: ${envfile}"
@@ -106,8 +131,8 @@ fi
 
 # 7. Cloud Resources Snapshot (Fast, Non-Blocking)
 echo ""
-echo "[7/7] Cloud Run Services & GCS Buckets (if authenticated)"
-if [[ -n "${PROJECT_ID:-}" && "${PROJECT_ID}" != "(unset)" ]]; then
+echo "[7/7] Cloud Resources Snapshot (if authenticated)"
+if [[ -n "${PROJECT_ID:-}" ]]; then
   echo "  Cloud Run Services:"
   timeout 10s gcloud run services list --project="${PROJECT_ID}" --format="table(metadata.name,status.url,status.conditions[0].status)" 2>/dev/null | sed 's/^/    /' || echo "    (skipped or timed out)"
   echo "  GCS Buckets:"
@@ -118,3 +143,14 @@ echo ""
 echo "========================================================================"
 echo "  Next step: run 'hl-verify ${WORKDIR}' to check Python/ADK invariants."
 echo "========================================================================"
+
+if [[ "${CAPTURED_STDOUT}" -eq 1 ]]; then
+  cat >&3 <<EOF
+export PATH="\${HOME}/.local/bin:\${PATH}"
+export PROJECT_ID="${PROJECT_ID}"
+export GOOGLE_CLOUD_PROJECT="${PROJECT_ID}"
+export GOOGLE_GENAI_USE_VERTEXAI="True"
+export GOOGLE_CLOUD_LOCATION="global"
+EOF
+  exec 3>&-
+fi
