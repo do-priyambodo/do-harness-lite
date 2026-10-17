@@ -122,6 +122,25 @@ case "${SUBCMD}" in
       echo "ERROR: Agent Runtime deployment requires a regional endpoint (e.g. us-central1), NOT 'global'." >&2
       exit 1
     fi
+
+    # 0. Auto-sanitize reserved PORT env var from .env and Dockerfile (prevents 400 FAILED_PRECONDITION: 'PORT' is reserved)
+    for env_file in .env */.env; do
+      if [[ -f "${env_file}" ]] && grep -qE '^PORT=' "${env_file}" 2>/dev/null; then
+        echo "[hl-adk] Stripping reserved PORT=... from ${env_file}..."
+        sed -i '/^PORT=/d' "${env_file}"
+      fi
+    done
+    if [[ -f "Dockerfile" ]] && grep -qE '^ENV[[:space:]]+PORT' Dockerfile 2>/dev/null; then
+      echo "[hl-adk] Stripping reserved ENV PORT from Dockerfile..."
+      sed -i '/^ENV[[:space:]]\+PORT/d' Dockerfile
+    fi
+
+    # Ensure cloudpickle is installed in /opt/venv or active python environment
+    if ! python3 -c "import cloudpickle" >/dev/null 2>&1; then
+      echo "[hl-adk] Installing missing cloudpickle dependency..."
+      sudo /opt/venv/bin/pip install -q cloudpickle 2>/dev/null || pip install -q cloudpickle 2>/dev/null || true
+    fi
+
     echo "[hl-adk] Running hl-verify before deploy..."
     "$(dirname "${BASH_SOURCE[0]}")/verify_lite.py" .
 
@@ -151,11 +170,13 @@ PYEOF
     # 2. Try agents-cli deploy first
     if [[ ! -f "agents-cli-manifest.yaml" ]] && command -v agents-cli >/dev/null 2>&1; then
       agents-cli scaffold enhance . --deployment-target agent_runtime 2>/dev/null || true
+      [[ -f "Dockerfile" ]] && sed -i '/^ENV[[:space:]]\+PORT/d' Dockerfile || true
     fi
     if [[ -f "agents-cli-manifest.yaml" ]] && command -v agents-cli >/dev/null 2>&1; then
       sed -i 's/deployment_target: "none"/deployment_target: "agent_runtime"/g' agents-cli-manifest.yaml
-      echo "[hl-adk] Deploying via agents-cli deploy (deployment_target: agent_runtime)..."
-      agents-cli deploy --project "${PROJECT_ID}" || true
+      echo "[hl-adk] Deploying via agents-cli deploy (deployment_target: agent_runtime, region: ${REGION})..."
+      agents-cli deploy --project "${PROJECT_ID}" --region "${REGION}" 2>/dev/null || \
+        agents-cli deploy --project "${PROJECT_ID}" || true
     elif [[ -n "${ENTRYPOINT}" ]] && command -v agents-cli >/dev/null 2>&1; then
       agents-cli deploy agent-runtime \
         --project "${PROJECT_ID}" \

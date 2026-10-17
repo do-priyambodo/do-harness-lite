@@ -67,12 +67,12 @@ Follow these rules strictly whenever creating, modifying, evaluating, or deployi
 
 ## 7. Deployment Target Separation: Agent Runtime (`ReasoningEngine`) vs. Cloud Run (`FastAPI`)
 - **Target A — Vertex AI Agent Runtime (`deployment_target: "agent_runtime"` / `ReasoningEngine`)**:
-  - Package only `<agent_pkg>/__init__.py` exposing `root_agent = Agent(...)` (plus any bundled data files inside `<agent_pkg>/`) and `.env`.
-  - **NEVER** call `get_fast_api_app` or spin up `uvicorn` on `:8000` when the target is Agent Runtime.
-  - **Idempotent Deploy & Test**: Always check `ReasoningEngine.list()` before deploying so you never start a duplicate 5-minute LRO build. Use:
-    - `hl-adk deploy-runtime us-central1` (idempotent deploy via `agents-cli` + `ReasoningEngine.create` fallback)
-    - `hl-adk test-runtime us-central1 "<test question>"` (polls any in-flight LRO and tests via `engine.stream_query`)
-    - `hl-adk publish-ge "<Gemini Enterprise App Name or ID>" "<Display Name>" "<Description>"` (grants IAM, resolves App ID & ReasoningEngine, runs `agents-cli publish gemini-enterprise`, and verifies/registers on Discovery Engine `v1alpha/.../assistants/default_assistant/agents`)
+  - **4 Fatal Agent Runtime Traps to Avoid**:
+    1. **Reserved `PORT` Variable**: NEVER include `PORT=...` in `.env`, `Dockerfile`, or `env_vars` (`agents-cli deploy` fails with `400 FAILED_PRECONDITION: Environment variable name 'PORT' is reserved`).
+    2. **`cloudpickle` & `__file__` (`Code 13: Reasoning Engine failed to deploy`)**: NEVER reference `__file__` inside a tool function! When `cloudpickle` serializes the function, `__file__` hardcodes `/config/Desktop/...` or raises `NameError` inside the remote container, crashing container startup with `Code 13`. Always import `os` inside the tool function, check relative/container paths (`"corporate_travel_policy.txt"`, `"/code/corporate_travel_policy.txt"`, `"/app/corporate_travel_policy.txt"`), and embed a fallback policy summary string directly inside the tool function.
+    3. **Install `cloudpickle` in `/opt/venv`**: Run `sudo /opt/venv/bin/pip install -q cloudpickle` before calling `ReasoningEngine.create` / `client.agent_engines.create`.
+    4. **No Circular `import agent` Across Subdirectories**: Never write `import agent` inside `app/agent.py` or `<pkg>/agent.py` (when `sys.path[0]` is `app/`, `import agent` imports `app/agent.py` itself!).
+  - **Idempotent Deploy & Test**: Always run `agents-cli deploy --project <PROJECT_ID> --region us-central1` AND ensure a live `ReasoningEngine` exists in `us-central1` via `hl-adk deploy-runtime us-central1`, then test via `hl-adk test-runtime us-central1 "<test question>"`.
 - **Target B — Cloud Run & A2A Production Wiring (`deployment_target: "cloud_run"`)**:
   - **Headless API Server**: Use `get_fast_api_app(agents_dir=".", web=False)` in containers with read-only filesystems (never pass the non-existent `adk_app=` kwarg, and **NEVER** iterate `[r.methods for r in app.routes]` because Starlette `APIWebSocketRoute` has no `.methods` attribute; use `getattr(r, "methods", ["WS"])` if inspecting routes).
   - **Env Var Safety**: Always update Cloud Run services with `--update-env-vars KEY=VAL` or `--image=...`. Never use `--set-env-vars`, which wipes existing `DB_USER`, `DB_PASSWORD`, and VPC variables.
